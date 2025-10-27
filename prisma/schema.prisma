@@ -1,0 +1,154 @@
+// ==============================
+// 📦 DATABASE CONFIGURATION
+// ==============================
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ==============================
+// 👤 USER MODEL
+// ==============================
+model User {
+  id                 String            @id @default(cuid())
+  firstName          String
+  lastName           String
+  email              String            @unique
+  password           String
+  organization       Organization?
+  workspaces         Workspace[]
+  members            WorkspaceMember[]
+  sentInvites        WorkspaceInvite[] @relation("UserInvites")
+  sentChannelInvites ChannelInvite[]   @relation("UserChannelInvites") // ✅ matches ChannelInvite.inviter
+  createdAt          DateTime          @default(now())
+  channelMembers     ChannelMember[]   @relation("UserChannelMembers")
+  messages           Message[]         @relation("UserMessages")
+}
+
+// ==============================
+// 🏢 ORGANIZATION MODEL
+// ==============================
+model Organization {
+  id         String      @id @default(cuid())
+  code       String      @unique
+  name       String
+  ownerId    String      @unique
+  owner      User        @relation(fields: [ownerId], references: [id])
+  workspaces Workspace[]
+  createdAt  DateTime    @default(now())
+}
+
+// ==============================
+// 💼 WORKSPACE MODEL
+// ==============================
+model Workspace {
+  id             String   @id @default(cuid())
+  name           String
+  ownerId        String
+  organizationId String?
+  color          String?
+  createdAt      DateTime @default(now())
+
+  owner        User              @relation(fields: [ownerId], references: [id])
+  organization Organization?     @relation(fields: [organizationId], references: [id])
+  channels     Channel[]
+  members      WorkspaceMember[]
+  invites      WorkspaceInvite[]
+}
+
+// ==============================
+// ✉️ WORKSPACE INVITE MODEL
+// ==============================
+model WorkspaceInvite {
+  id          String   @id @default(cuid())
+  email       String
+  token       String   @unique
+  status      String   @default("pending")
+  workspaceId String
+  inviterId   String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  inviter   User      @relation("UserInvites", fields: [inviterId], references: [id])
+}
+
+// ==============================
+// 💬 CHANNEL MODEL
+// ==============================
+model Channel {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  workspaceId String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id])
+  members   ChannelMember[] @relation("ChannelMembers")
+  messages  Message[]       @relation("ChannelMessages")
+  invites   ChannelInvite[] @relation("ChannelInvites") // ✅ matches ChannelInvite.channel
+}
+
+// ==============================
+// 👥 WORKSPACE MEMBER MODEL
+// ==============================
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        String   @default("member")
+  createdAt   DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@unique([userId, workspaceId])
+}
+
+// ==============================
+// 👥 CHANNEL MEMBER MODEL
+// ==============================
+model ChannelMember {
+  id        String   @id @default(cuid())
+  userId    String
+  channelId String
+  joinedAt  DateTime @default(now())
+
+  user    User    @relation("UserChannelMembers", fields: [userId], references: [id])
+  channel Channel @relation("ChannelMembers", fields: [channelId], references: [id])
+
+  @@unique([userId, channelId])
+}
+
+// ==============================
+// 💬 MESSAGE MODEL
+// ==============================
+model Message {
+  id        String   @id @default(cuid())
+  content   String
+  userId    String
+  channelId String
+  createdAt DateTime @default(now())
+
+  user    User    @relation("UserMessages", fields: [userId], references: [id])
+  channel Channel @relation("ChannelMessages", fields: [channelId], references: [id])
+}
+
+// ==============================
+// ✉️ CHANNEL INVITE MODEL
+// ==============================
+model ChannelInvite {
+  id           String   @id @default(cuid())
+  channelId    String
+  inviterId    String
+  inviteeEmail String
+  status       String   @default("pending") // pending | accepted | rejected
+  token        String   @unique
+  createdAt    DateTime @default(now())
+
+  channel Channel @relation("ChannelInvites", fields: [channelId], references: [id]) // ✅ matches Channel.invites
+  inviter User    @relation("UserChannelInvites", fields: [inviterId], references: [id]) // ✅ matches User.sentChannelInvites
+}

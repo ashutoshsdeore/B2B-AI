@@ -2,8 +2,8 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "My B2B AI SaaS",
-  description: "A modern AI SaaS built with Next.js and Tailwind CSS",
+  title: "TeamFlow — AI-ready Team Collaboration",
+  description: "Modern AI-powered communication platform.",
 };
 
 export default function RootLayout({
@@ -13,9 +13,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-gray-50 text-gray-900">
-        <main className="container mx-auto p-6">{children}</main>
-      </body>
+      <body className="bg-black text-white antialiased">{children}</body>
     </html>
   );
 }
