@@ -30,6 +30,11 @@ async function getUserFromToken() {
 
 /**
  * ✅ GET — Fetch all workspaces for the logged-in user
+ *
+ * Changes:
+ * - Also returns workspaces that contain channels with a pending invite
+ *   for the current user's email. This allows invited users to *see*
+ *   the workspace + channel before accepting the invite.
  */
 export async function GET() {
   try {
@@ -41,15 +46,46 @@ export async function GET() {
       );
     }
 
+    // Build query: include workspaces where the user is owner OR a member
+    // OR a workspace that contains a channel with a pending invite for the user's email.
     const workspaces = await prisma.workspace.findMany({
       where: {
         OR: [
           { ownerId: user.id },
           { members: { some: { userId: user.id } } },
+          {
+            // workspace contains a channel that has a pending invite addressed to this user's email
+            channels: {
+              some: {
+                invites: {
+                  some: {
+                    inviteeEmail: user.email,
+                    status: "pending",
+                  },
+                },
+              },
+            },
+          },
         ],
       },
       include: {
-        channels: true,
+        // include channels, but for each channel include any invites that pertain to this user
+        channels: {
+          include: {
+            invites: {
+              where: {
+                inviteeEmail: user.email,
+                status: "pending",
+              },
+              // include inviter info to show who invited them
+              include: {
+                inviter: {
+                  select: { id: true, firstName: true, lastName: true, email: true },
+                },
+              },
+            },
+          },
+        },
         members: { include: { user: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -62,6 +98,8 @@ export async function GET() {
       { success: false, error: "Internal Server Error" },
       { status: 500 }
     );
+  } finally {
+    await prisma.$disconnect();
   }
 }
 
@@ -127,5 +165,7 @@ export async function POST(req: Request) {
       { success: false, error: "Internal Server Error" },
       { status: 500 }
     );
+  } finally {
+    await prisma.$disconnect();
   }
 }

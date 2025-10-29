@@ -34,7 +34,10 @@ export async function POST(req: Request) {
   try {
     const user = await getUserFromToken();
     if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
     const { name, workspaceId } = await req.json();
@@ -51,7 +54,7 @@ export async function POST(req: Request) {
     const uniqueSuffix = Math.random().toString(36).substring(2, 8);
     const slug = `${baseSlug}-${uniqueSuffix}`;
 
-    // ✅ Create new channel (removed createdById)
+    // ✅ Create new channel
     const channel = await prisma.channel.create({
       data: {
         name,
@@ -71,7 +74,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, channel });
   } catch (error) {
     console.error("❌ Error creating channel:", error);
-    return NextResponse.json({ success: false, error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: "Internal Server Error" },
+      { status: 500 }
+    );
   } finally {
     await prisma.$disconnect();
   }
@@ -79,12 +85,18 @@ export async function POST(req: Request) {
 
 /**
  * ✅ GET — Fetch all channels for a workspace
+ *
+ * 🧠 Enhancement:
+ * Include channels that the user was *invited to* (even if not yet accepted).
  */
 export async function GET(req: Request) {
   try {
     const user = await getUserFromToken();
     if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
     const { searchParams } = new URL(req.url);
@@ -97,14 +109,42 @@ export async function GET(req: Request) {
       );
     }
 
+    // ✅ Fetch channels that the user is either:
+    // - an active member of, OR
+    // - invited to (pending)
     const channels = await prisma.channel.findMany({
       where: {
         workspaceId,
-        members: { some: { userId: user.id } },
+        OR: [
+          { members: { some: { userId: user.id } } },
+          {
+            invites: {
+              some: {
+                inviteeEmail: user.email,
+                status: "pending",
+              },
+            },
+          },
+        ],
       },
       include: {
         members: {
-          include: { user: { select: { firstName: true, lastName: true, email: true } } },
+          include: {
+            user: {
+              select: { firstName: true, lastName: true, email: true },
+            },
+          },
+        },
+        invites: {
+          where: {
+            inviteeEmail: user.email,
+            status: "pending",
+          },
+          include: {
+            inviter: {
+              select: { id: true, firstName: true, lastName: true, email: true },
+            },
+          },
         },
       },
       orderBy: { createdAt: "desc" },
@@ -113,7 +153,10 @@ export async function GET(req: Request) {
     return NextResponse.json({ success: true, channels });
   } catch (error) {
     console.error("❌ Error fetching channels:", error);
-    return NextResponse.json({ success: false, error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: "Internal Server Error" },
+      { status: 500 }
+    );
   } finally {
     await prisma.$disconnect();
   }

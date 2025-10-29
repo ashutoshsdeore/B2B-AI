@@ -4,11 +4,12 @@ import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { cookies } from "next/headers";
 import jwt from "jsonwebtoken";
+import { pusherServer } from "../../../../lib/pusher";
 
 const prisma = new PrismaClient();
 
 /**
- * ✅ Helper: Get and verify user from JWT cookie
+ * ✅ Helper — Extract current user from cookie token
  */
 async function getUserFromToken() {
   try {
@@ -20,8 +21,7 @@ async function getUserFromToken() {
     if (!secret) throw new Error("Missing JWT secret");
 
     const decoded = jwt.verify(token, secret) as { id: string };
-    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
-    return user;
+    return prisma.user.findUnique({ where: { id: decoded.id } });
   } catch (error) {
     console.error("❌ Token validation failed:", error);
     return null;
@@ -29,53 +29,34 @@ async function getUserFromToken() {
 }
 
 /**
- * ✅ GET — Fetch all invites for a specific channel
+ * ✅ GET — Fetch all invites for a channel
  */
 export async function GET(
   req: Request,
-  context: { params: { channelId: string } } // ✅ FIXED
+  context: { params: Promise<{ channelId: string }> }
 ) {
   try {
-    const { channelId } = context.params; // ✅ FIXED
+    const { channelId } = await context.params;
     const user = await getUserFromToken();
-
-    if (!user) {
-      return NextResponse.json(
-        { success: false, error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
+    if (!user)
+      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
 
     const channel = await prisma.channel.findUnique({
       where: { id: channelId },
       include: { workspace: true },
     });
+    if (!channel)
+      return NextResponse.json({ success: false, error: "Channel not found" }, { status: 404 });
 
-    if (!channel) {
-      return NextResponse.json(
-        { success: false, error: "Channel not found" },
-        { status: 404 }
-      );
-    }
-
-    // ✅ Check both workspace and channel membership
     const isWorkspaceMember = await prisma.workspaceMember.findFirst({
       where: { workspaceId: channel.workspaceId, userId: user.id },
     });
-
     const isChannelMember = await prisma.channelMember.findFirst({
       where: { channelId, userId: user.id },
     });
 
-    if (!isWorkspaceMember && !isChannelMember) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Access denied: not a member of this workspace or channel",
-        },
-        { status: 403 }
-      );
-    }
+    if (!isWorkspaceMember && !isChannelMember)
+      return NextResponse.json({ success: false, error: "Access denied" }, { status: 403 });
 
     const invites = await prisma.channelInvite.findMany({
       where: { channelId },
@@ -84,7 +65,7 @@ export async function GET(
         inviteeEmail: true,
         status: true,
         createdAt: true,
-        inviter: { select: { firstName: true, lastName: true } },
+        inviter: { select: { firstName: true, lastName: true, email: true, id: true } },
         channel: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -103,92 +84,61 @@ export async function GET(
 }
 
 /**
- * ✅ POST — Send a new channel invite to a user
+ * ✅ POST — Create a channel invite
+ * Adds invited user to workspace + (optionally) as pending channel member
+ * Broadcasts to invited user via Pusher
  */
 export async function POST(
   req: Request,
-  context: { params: { channelId: string } } // ✅ FIXED
+  context: { params: Promise<{ channelId: string }> }
 ) {
   try {
-    const { channelId } = context.params; // ✅ FIXED
+    const { channelId } = await context.params;
     const user = await getUserFromToken();
+    if (!user)
+      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
 
-    if (!user) {
-      return NextResponse.json(
-        { success: false, error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
+    const body = await req.json();
+    const email = body.email ?? body.inviteeEmail;
+    if (!email || !email.includes("@"))
+      return NextResponse.json({ success: false, error: "Valid email required" }, { status: 400 });
 
-    const { email } = await req.json();
-    if (!email) {
-      return NextResponse.json(
-        { success: false, error: "Email is required" },
-        { status: 400 }
-      );
-    }
-
-    // ✅ Verify channel exists
     const channel = await prisma.channel.findUnique({
       where: { id: channelId },
       include: { workspace: true },
     });
-    if (!channel) {
-      return NextResponse.json(
-        { success: false, error: "Channel not found" },
-        { status: 404 }
-      );
-    }
+    if (!channel)
+      return NextResponse.json({ success: false, error: "Channel not found" }, { status: 404 });
 
-    // ✅ Ensure inviter belongs to the same workspace
-    const member = await prisma.workspaceMember.findFirst({
+    // ✅ Ensure inviter has workspace access
+    const inviterMember = await prisma.workspaceMember.findFirst({
       where: { workspaceId: channel.workspaceId, userId: user.id },
     });
-    if (!member) {
-      return NextResponse.json(
-        { success: false, error: "Access denied" },
-        { status: 403 }
-      );
-    }
+    if (!inviterMember)
+      return NextResponse.json({ success: false, error: "Access denied" }, { status: 403 });
 
-    // ✅ Check invited user exists
     const invitedUser = await prisma.user.findUnique({ where: { email } });
-    if (!invitedUser) {
-      return NextResponse.json(
-        { success: false, error: "User not found" },
-        { status: 404 }
-      );
-    }
+    if (!invitedUser)
+      return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
 
-    // ✅ Prevent duplicate membership
+    // ✅ Prevent duplicates
     const existingMember = await prisma.channelMember.findFirst({
       where: { userId: invitedUser.id, channelId },
     });
-    if (existingMember) {
-      return NextResponse.json(
-        { success: false, error: "User is already a member of this channel" },
-        { status: 400 }
-      );
-    }
+    if (existingMember)
+      return NextResponse.json({ success: false, error: "Already a member" }, { status: 400 });
 
-    // ✅ Prevent duplicate pending invites
     const existingInvite = await prisma.channelInvite.findFirst({
       where: { inviteeEmail: email, channelId, status: "pending" },
     });
-    if (existingInvite) {
-      return NextResponse.json(
-        { success: false, error: "User already has a pending invite" },
-        { status: 400 }
-      );
-    }
+    if (existingInvite)
+      return NextResponse.json({ success: false, error: "Already invited" }, { status: 400 });
 
-    // ✅ Create invite token (valid for 7 days)
+    // ✅ Create token
     const secret = process.env.JWT_SECRET || process.env.NEXTAUTH_SECRET!;
-    const inviteToken = jwt.sign({ email, channelId }, secret, {
-      expiresIn: "7d",
-    });
+    const inviteToken = jwt.sign({ email, channelId }, secret, { expiresIn: "7d" });
 
-    // ✅ Save invite to DB
+    // ✅ Save invite
     const invite = await prisma.channelInvite.create({
       data: {
         channelId,
@@ -198,17 +148,67 @@ export async function POST(
       },
     });
 
+    // ✅ Ensure invited user is in workspace
+    await prisma.workspaceMember.upsert({
+      where: {
+        userId_workspaceId: {
+          userId: invitedUser.id,
+          workspaceId: channel.workspaceId,
+        },
+      },
+      update: {},
+      create: {
+        userId: invitedUser.id,
+        workspaceId: channel.workspaceId,
+        role: "guest",
+      },
+    });
+
+    // ✅ Add pending channel membership
+    await prisma.channelMember.create({
+      data: {
+        userId: invitedUser.id,
+        channelId,
+        isPendingInvite: true, // requires schema update
+      },
+    });
+
+    // 🔔 Notify invited user via Pusher
+    await pusherServer.trigger(`private-user-${invitedUser.id}`, "workspace:invite", {
+      workspace: {
+        id: channel.workspace.id,
+        name: channel.workspace.name,
+        color: channel.workspace.color ?? "#1f6feb",
+      },
+      channel: {
+        id: channel.id,
+        name: channel.name,
+        slug: channel.slug,
+      },
+      invite: {
+        id: invite.id,
+        email: invite.inviteeEmail,
+        token: invite.token,
+        status: invite.status,
+      },
+      message: `You were invited to ${channel.name} in ${channel.workspace.name}`,
+    });
+
+    // 🔔 Notify workspace (optional — for inviter feedback)
+    await pusherServer.trigger(`workspace-${channel.workspaceId}`, "invite:sent", {
+      invitedEmail: email,
+      channelId,
+      inviterId: user.id,
+    });
+
     return NextResponse.json({
       success: true,
-      message: "Channel invitation created successfully",
+      message: "Invite created successfully",
       invite,
     });
   } catch (error) {
-    console.error("❌ Error creating channel invite:", error);
-    return NextResponse.json(
-      { success: false, error: "Internal Server Error" },
-      { status: 500 }
-    );
+    console.error("❌ Error creating invite:", error);
+    return NextResponse.json({ success: false, error: "Internal Server Error" }, { status: 500 });
   } finally {
     await prisma.$disconnect();
   }

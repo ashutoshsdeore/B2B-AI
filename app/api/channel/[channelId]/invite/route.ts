@@ -1,10 +1,7 @@
-export const runtime = "nodejs";
-
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { cookies } from "next/headers";
 import jwt from "jsonwebtoken";
-import { randomBytes } from "crypto";
+import { cookies } from "next/headers";
 
 const prisma = new PrismaClient();
 
@@ -29,92 +26,96 @@ async function getUserFromToken() {
 }
 
 /**
- * ✅ POST — Send a channel invite
+ * ✅ POST — Accept channel invite
  */
-export async function POST(
-  req: Request,
-  { params }: { params: { channelId: string } }
-) {
+export async function POST(req: Request) {
   try {
-    const { channelId } = params;
-    const user = await getUserFromToken();
+    console.log("🔥 [ACCEPT INVITE] route called");
 
-    if (!user) {
+    const { searchParams } = new URL(req.url);
+    const token = searchParams.get("token");
+
+    if (!token)
+      return NextResponse.json({ success: false, error: "Missing invite token" }, { status: 400 });
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret)
+      return NextResponse.json({ success: false, error: "Missing JWT_SECRET" }, { status: 500 });
+
+    // 🔹 Verify invite token
+    let decoded: any;
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch {
+      return NextResponse.json({ success: false, error: "Invalid or expired invite token" }, { status: 400 });
+    }
+
+    // 🔹 Find the invite
+    const invite = await prisma.channelInvite.findFirst({
+      where: { channelId: decoded.channelId, inviteeEmail: decoded.email },
+      include: { channel: true },
+    });
+
+    if (!invite)
+      return NextResponse.json({ success: false, error: "Invite not found" }, { status: 404 });
+
+    // 🔹 Get logged-in user
+    const cookieStore = await cookies();
+    const tokenCookie = cookieStore.get("token");
+    if (!tokenCookie?.value)
       return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+
+    const userData = jwt.verify(tokenCookie.value, secret) as { id: string; email: string };
+
+    if (userData.email !== invite.inviteeEmail)
+      return NextResponse.json({ success: false, error: "Invite does not belong to this user" }, { status: 403 });
+
+    // 🔹 Add user to the channel
+    const existingMember = await prisma.channelMember.findFirst({
+      where: { userId: userData.id, channelId: invite.channelId },
+    });
+
+    if (!existingMember) {
+      await prisma.channelMember.create({
+        data: { userId: userData.id, channelId: invite.channelId },
+      });
     }
 
-    const { inviteeEmail } = await req.json();
-
-    if (!inviteeEmail || !inviteeEmail.includes("@")) {
-      return NextResponse.json(
-        { success: false, error: "Valid invitee email is required" },
-        { status: 400 }
-      );
-    }
-
-    // ✅ Check if channel exists
+    // ✅ Ensure user is part of workspace
     const channel = await prisma.channel.findUnique({
-      where: { id: channelId },
-      include: { workspace: true },
+      where: { id: invite.channelId },
+      select: { id: true, name: true, workspaceId: true },
     });
 
-    if (!channel) {
-      return NextResponse.json({ success: false, error: "Channel not found" }, { status: 404 });
+    const workspaceMember = await prisma.workspaceMember.findFirst({
+      where: { userId: userData.id, workspaceId: channel!.workspaceId },
+    });
+
+    if (!workspaceMember) {
+      await prisma.workspaceMember.create({
+        data: {
+          userId: userData.id,
+          workspaceId: channel!.workspaceId,
+          role: "member",
+        },
+      });
     }
 
-    // ✅ Ensure inviter is a member of the channel
-    const isMember = await prisma.channelMember.findFirst({
-      where: { channelId, userId: user.id },
+    // 🔹 Mark invite as accepted
+    await prisma.channelInvite.update({
+      where: { id: invite.id },
+      data: { status: "accepted" },
     });
 
-    if (!isMember) {
-      return NextResponse.json(
-        { success: false, error: "You are not a member of this channel" },
-        { status: 403 }
-      );
-    }
-
-    // ✅ Prevent duplicate pending invites
-    const existingInvite = await prisma.channelInvite.findFirst({
-      where: {
-        channelId,
-        inviteeEmail,
-        status: "pending",
-      },
+    console.log("🎉 Invite accepted successfully!");
+    return NextResponse.json({
+      success: true,
+      message: `You have joined channel "${channel?.name}"`,
+      channel,
     });
-
-    if (existingInvite) {
-      return NextResponse.json(
-        { success: false, error: "An invite already exists for this email" },
-        { status: 400 }
-      );
-    }
-
-    // ✅ Create invite token (valid for 7 days)
-    const secret = process.env.JWT_SECRET || process.env.NEXTAUTH_SECRET!;
-    const token = jwt.sign(
-      { email: inviteeEmail, channelId },
-      secret,
-      { expiresIn: "7d" }
-    );
-
-    // ✅ Save invite to DB
-    const invite = await prisma.channelInvite.create({
-      data: {
-        channelId,
-        inviterId: user.id,
-        inviteeEmail,
-        token,
-      },
-    });
-
-    return NextResponse.json({ success: true, invite });
-  } catch (error) {
-    console.error("❌ Error sending channel invite:", error);
-    return NextResponse.json(
-      { success: false, error: "Internal Server Error" },
-      { status: 500 }
-    );
+  } catch (err: any) {
+    console.error("💥 Internal Server Error:", err);
+    return NextResponse.json({ success: false, error: err.message || "Internal Server Error" }, { status: 500 });
   } finally {
     await prisma.$disconnect();
   }
@@ -123,28 +124,24 @@ export async function POST(
 /**
  * ✅ GET — Get all invites for a specific channel
  */
-export async function GET(
-  req: Request,
-  { params }: { params: { channelId: string } }
-) {
+export async function GET(req: Request) {
   try {
-    const { channelId } = params;
+    const { searchParams } = new URL(req.url);
+    const channelId = searchParams.get("channelId");
+    if (!channelId)
+      return NextResponse.json({ success: false, error: "Missing channelId" }, { status: 400 });
+
     const user = await getUserFromToken();
-
-    if (!user) {
+    if (!user)
       return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
-    }
 
-    // ✅ Verify user has access to channel
     const isMember = await prisma.channelMember.findFirst({
       where: { channelId, userId: user.id },
     });
 
-    if (!isMember) {
+    if (!isMember)
       return NextResponse.json({ success: false, error: "Access denied" }, { status: 403 });
-    }
 
-    // ✅ Fetch invites for that channel
     const invites = await prisma.channelInvite.findMany({
       where: { channelId },
       include: {
@@ -156,10 +153,7 @@ export async function GET(
     return NextResponse.json({ success: true, invites });
   } catch (error) {
     console.error("❌ Error fetching invites:", error);
-    return NextResponse.json(
-      { success: false, error: "Internal Server Error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, error: "Internal Server Error" }, { status: 500 });
   } finally {
     await prisma.$disconnect();
   }

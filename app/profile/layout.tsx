@@ -2,7 +2,8 @@
 
 import { useEffect, useState, ReactNode } from "react";
 import { Plus, X, Send, Smile, Eye, Check, XCircle } from "lucide-react";
-import { pusherClient } from "../lib/pusher-client";
+import Pusher from "pusher-js";
+import { pusherClient } from "../lib/pusher-client"; // keep existing pusher client if used for channels
 import ChatSection from "../../components/ChatSection";
 
 interface Workspace {
@@ -37,7 +38,6 @@ interface Invite {
 export default function ProfileLayout({ children }: { children: ReactNode }) {
   // === State ===
   const [messages, setMessages] = useState<any[]>([]);
-
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<Workspace | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -59,126 +59,130 @@ export default function ProfileLayout({ children }: { children: ReactNode }) {
 
   const [message, setMessage] = useState("");
 
-
-// fetch messages for selected channel
-  useEffect(() => {
-  if (!selectedChannel) return;
-
-  const fetchMessages = async () => {
+  // helper: fetch current user (id + email)
+  const fetchMe = async () => {
     try {
-      const res = await fetch(`/api/channel/${selectedChannel.id}/messages`, {
-        credentials: "include",
-      });
+      const res = await fetch("/api/auth/me", { credentials: "include" });
       const data = await res.json();
-      if (res.ok && data.success) setMessages(data.messages);
-    } catch (error) {
-      console.error("Fetch messages error:", error);
+      if (res.ok && data.success && data.user) return data.user;
+      return null;
+    } catch (err) {
+      return null;
     }
   };
 
-  fetchMessages();
-}, [selectedChannel]);
-
-// pusher updates 
-
-useEffect(() => {
-  if (!selectedChannel) return;
-
-  const channel = pusherClient.subscribe(`channel-${selectedChannel.id}`);
-  const handleNewMessage = (message: any) => {
-    setMessages((prev) => [...prev, message]);
-  };
-
-  channel.bind("message-sent", handleNewMessage);
-
-  return () => {
-    pusherClient.unsubscribe(`channel-${selectedChannel.id}`);
-    channel.unbind("message-sent", handleNewMessage);
-  };
-}, [selectedChannel]);
-
-
-  // === Fetch Workspaces ===
+  // === Fetch Messages for Selected Channel ===
   useEffect(() => {
-    const fetchWorkspaces = async () => {
-      try {
-        const res = await fetch("/api/workspace", { credentials: "include" });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          setWorkspaces(data.workspaces);
-          if (!selectedWorkspace && data.workspaces.length > 0)
-            setSelectedWorkspace(data.workspaces[0]);
-        }
-      } catch (error) {
-        console.error("Fetch workspaces error:", error);
-      }
-    };
-    fetchWorkspaces();
-  }, []);
+    if (!selectedChannel) return;
 
-  
-  // === Fetch Channels ===
-  useEffect(() => {
-    if (!selectedWorkspace) return;
-    const fetchChannels = async () => {
+    const fetchMessages = async () => {
       try {
-        const res = await fetch(`/api/channel?workspaceId=${selectedWorkspace.id}`, {
+        const res = await fetch(`/api/channel/${selectedChannel.id}/messages`, {
           credentials: "include",
         });
         const data = await res.json();
-        if (res.ok && data.success) setChannels(data.channels);
+        if (res.ok && data.success) setMessages(data.messages);
       } catch (error) {
-        console.error("Fetch channels error:", error);
+        console.error("Fetch messages error:", error);
       }
     };
-    fetchChannels();
-  }, [selectedWorkspace]);
 
-  // === Fetch Members of selected channel ===
-// === Fetch Members + Include Logged-in User ===
-useEffect(() => {
-  if (!selectedChannel) return;
+    fetchMessages();
+  }, [selectedChannel]);
 
-  const fetchMembers = async () => {
+  // === Pusher updates for messages (existing) ===
+  useEffect(() => {
+    if (!selectedChannel) return;
+
+    const channel = pusherClient.subscribe(`channel-${selectedChannel.id}`);
+    const handleNewMessage = (message: any) => {
+      setMessages((prev) => [...prev, message]);
+    };
+
+    channel.bind("message-sent", handleNewMessage);
+
+    return () => {
+      pusherClient.unsubscribe(`channel-${selectedChannel.id}`);
+      channel.unbind("message-sent", handleNewMessage);
+    };
+  }, [selectedChannel]);
+
+  // === Fetch Workspaces ===
+  const fetchWorkspaces = async () => {
     try {
-      // 1️⃣ Fetch channel members
-      const res = await fetch(`/api/channel/${selectedChannel.id}/members`, {
-        credentials: "include",
-      });
+      const res = await fetch("/api/workspace", { credentials: "include" });
       const data = await res.json();
-
-      // 2️⃣ Fetch logged-in user
-      const meRes = await fetch("/api/auth/me", { credentials: "include" });
-      const meData = await meRes.json();
-
       if (res.ok && data.success) {
-        let allMembers = data.members || [];
-
-        // Add logged-in user if not already in list
-        if (meRes.ok && meData.success && meData.user) {
-          const currentUser = {
-            id: meData.user.id,
-            name: `${meData.user.firstName || ""} ${meData.user.lastName || ""}`.trim(),
-            email: meData.user.email,
-            role: "You",
-          };
-
-          const isIncluded = allMembers.some((m: any) => m.email === currentUser.email);
-          if (!isIncluded) {
-            allMembers.unshift(currentUser); // put at top of list
-          }
-        }
-
-        setMembers(allMembers);
+        setWorkspaces(data.workspaces);
+        if (!selectedWorkspace && data.workspaces.length > 0)
+          setSelectedWorkspace(data.workspaces[0]);
       }
     } catch (error) {
-      console.error("Fetch channel members error:", error);
+      console.error("Fetch workspaces error:", error);
     }
   };
 
-  fetchMembers();
-}, [selectedChannel]);
+  useEffect(() => {
+    fetchWorkspaces();
+  }, []);
 
+  // === Fetch Channels ===
+  const fetchChannels = async (workspaceId: string) => {
+    try {
+      const res = await fetch(`/api/channel?workspaceId=${workspaceId}`, {
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (res.ok && data.success) setChannels(data.channels);
+    } catch (error) {
+      console.error("Fetch channels error:", error);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedWorkspace) fetchChannels(selectedWorkspace.id);
+  }, [selectedWorkspace]);
+
+  // === Fetch Members of Selected Channel ===
+  useEffect(() => {
+    if (!selectedChannel) return;
+
+    const fetchMembers = async () => {
+      try {
+        const res = await fetch(`/api/channel/${selectedChannel.id}/members`, {
+          credentials: "include",
+        });
+        const data = await res.json();
+
+        const meRes = await fetch("/api/auth/me", { credentials: "include" });
+        const meData = await meRes.json();
+
+        if (res.ok && data.success) {
+          let allMembers = data.members || [];
+
+          if (meRes.ok && meData.success && meData.user) {
+            const currentUser = {
+              id: meData.user.id,
+              name: `${meData.user.firstName || ""} ${meData.user.lastName || ""}`.trim(),
+              email: meData.user.email,
+              role: "You",
+            };
+
+            const isIncluded = allMembers.some((m: any) => m.email === currentUser.email);
+            if (!isIncluded) {
+              allMembers.unshift(currentUser);
+            }
+          }
+
+          setMembers(allMembers);
+        }
+      } catch (error) {
+        console.error("Fetch channel members error:", error);
+      }
+    };
+
+    fetchMembers();
+  }, [selectedChannel]);
 
   // === Create Workspace ===
   const handleCreateWorkspace = async () => {
@@ -227,59 +231,57 @@ useEffect(() => {
   };
 
   // === Invite Member (channel-based) ===
- // === Invite Member (channel-based) ===
-const handleInvite = async () => {
-  if (!inviteEmail.trim() || !selectedChannel) {
-    alert("Select a channel and enter email");
-    return;
-  }
-
-  try {
-    const res = await fetch(`/api/channel/${selectedChannel.id}/invites`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ email: inviteEmail }), // ✅ changed key name
-    });
-
-    const data = await res.json();
-    if (res.ok && data.success) {
-      alert(`✅ Invitation sent to ${inviteEmail}`);
-      setInviteEmail("");
-      setIsInviteModalOpen(false);
-    } else {
-      alert(`❌ ${data.error || "Failed to send invite."}`);
+  const handleInvite = async () => {
+    if (!inviteEmail.trim() || !selectedChannel) {
+      alert("Select a channel and enter email");
+      return;
     }
-  } catch (error) {
-    console.error("Channel invite error:", error);
-  }
-};
+
+    try {
+      const res = await fetch(`/api/channel/${selectedChannel.id}/invites`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: inviteEmail }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert(`✅ Invitation sent to ${inviteEmail}`);
+        setInviteEmail("");
+        setIsInviteModalOpen(false);
+      } else {
+        alert(`❌ ${data.error || "Failed to send invite."}`);
+      }
+    } catch (error) {
+      console.error("Channel invite error:", error);
+    }
+  };
 
   // === View Sent Channel Invites ===
-  // === View Sent Channel Invites ===
-const handleViewInvites = async () => {
-  if (!selectedChannel) {
-    alert("Select a channel first");
-    return;
-  }
-
-  try {
-    const res = await fetch(`/api/channel/${selectedChannel.id}/invites`, {
-      credentials: "include",
-    });
-    const data = await res.json();
-
-    if (res.ok && data.success) {
-      setInvites(data.invites);
-      setShowReceived(false);
-      setIsViewInvitesOpen(true);
-    } else {
-      alert(data.error || "Failed to fetch invites");
+  const handleViewInvites = async () => {
+    if (!selectedChannel) {
+      alert("Select a channel first");
+      return;
     }
-  } catch (error) {
-    console.error("View channel invites error:", error);
-  }
-};
+
+    try {
+      const res = await fetch(`/api/channel/${selectedChannel.id}/invites`, {
+        credentials: "include",
+      });
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        setInvites(data.invites);
+        setShowReceived(false);
+        setIsViewInvitesOpen(true);
+      } else {
+        alert(data.error || "Failed to fetch invites");
+      }
+    } catch (error) {
+      console.error("View channel invites error:", error);
+    }
+  };
 
   // === View My Received Invites ===
   const handleViewMyInvites = async () => {
@@ -299,42 +301,36 @@ const handleViewInvites = async () => {
   };
 
   // === Accept Invite ===
-  // === Accept Invite ===
-const handleAcceptInvite = async (token?: string, id?: string) => {
-  if (!token) return alert("Missing invite token");
-  try {
-    const res = await fetch(`/api/channel/invite/accept?token=${encodeURIComponent(token)}`, {
-      method: "POST",
-      credentials: "include",
-    });
-    const data = await res.json();
+  const handleAcceptInvite = async (token?: string, id?: string) => {
+    if (!token) return alert("Missing invite token");
+    try {
+      const res = await fetch(`/api/channel/invite/accept?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
 
-    if (res.ok && data.success) {
-      alert(`✅ ${data.message || "Channel invite accepted!"}`);
+      if (res.ok && data.success) {
+        alert(`✅ ${data.message || "Channel invite accepted!"}`);
 
-      // 🧠 Remove the accepted invite from modal list
-      const removedId = data.inviteId || id;
-      if (removedId) setInvites((prev) => prev.filter((i) => i.id !== removedId));
+        const removedId = data.inviteId || id;
+        if (removedId) setInvites((prev) => prev.filter((i) => i.id !== removedId));
 
-      // 🧩 Add the new channel to the sidebar (if not already present)
-      if (data.channel) {
-        setChannels((prev) => {
-          const exists = prev.some((ch) => ch.id === data.channel.id);
-          if (!exists) return [...prev, data.channel];
-          return prev;
-        });
-
-        // 🎯 Automatically switch to that channel
-        setSelectedChannel(data.channel);
+        if (data.channel) {
+          setChannels((prev) => {
+            const exists = prev.some((ch) => ch.id === data.channel.id);
+            if (!exists) return [...prev, data.channel];
+            return prev;
+          });
+          setSelectedChannel(data.channel);
+        }
+      } else {
+        alert(data.error || "Failed to accept invite");
       }
-    } else {
-      alert(data.error || "Failed to accept invite");
+    } catch (error) {
+      console.error("Accept channel invite error:", error);
     }
-  } catch (error) {
-    console.error("Accept channel invite error:", error);
-  }
-};
-
+  };
 
   // === Reject Invite ===
   const handleRejectInvite = async (token?: string, id?: string) => {
@@ -355,6 +351,109 @@ const handleAcceptInvite = async (token?: string, id?: string) => {
     }
   };
 
+  // ============================
+  // Pusher: listen for server invite events for the logged-in user
+  // ============================
+  useEffect(() => {
+    let mounted = true;
+    let pusher: Pusher | null = null;
+    let subChannel: any = null;
+
+    (async () => {
+      try {
+        const me = await fetchMe();
+        if (!me || !mounted) return;
+
+        // create a Pusher client (you already have pusherClient for channel messages; we create a dedicated client here
+        // to ensure we can subscribe to private-user-{id} even if your pusherClient is configured differently)
+        pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY || "", {
+          cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER || "",
+          authEndpoint: "/api/pusher/auth", // optional, use if you have private channel auth
+        });
+
+        const channelName = `private-user-${me.id}`;
+        subChannel = pusher.subscribe(channelName);
+
+        const onWorkspaceInvite = (payload: any) => {
+          console.log("📡 workspace invite payload:", payload);
+
+          // Add workspace if missing
+          if (payload.workspace) {
+            setWorkspaces((prev) => {
+              const exists = prev.some((w) => w.id === payload.workspace.id);
+              if (!exists) {
+                // keep ordering — add to end
+                return [
+                  ...prev,
+                  {
+                    id: payload.workspace.id,
+                    name: payload.workspace.name,
+                    color: payload.workspace.color ?? "#1f6feb",
+                  },
+                ];
+              }
+              return prev;
+            });
+          }
+
+          // Add channel if provided
+          if (payload.channel) {
+            setChannels((prev) => {
+              const exists = prev.some((c) => c.id === payload.channel.id);
+              if (!exists) {
+                return [
+                  ...prev,
+                  {
+                    id: payload.channel.id,
+                    name: payload.channel.name,
+                    slug: payload.channel.slug ?? "",
+                    workspaceId: payload.workspace?.id ?? payload.channel.workspaceId,
+                  },
+                ];
+              }
+              return prev;
+            });
+          }
+
+          // Optionally add invite to invites list (so user can accept from modal)
+          if (payload.invite) {
+            setInvites((prev) => {
+              const exists = prev.some((i) => i.id === payload.invite.id);
+              if (!exists) return [payload.invite, ...prev];
+              return prev;
+            });
+          }
+        };
+
+        subChannel.bind("workspace:invite", onWorkspaceInvite);
+
+        // cleanup
+        // @ts-ignore
+        subChannel._onWorkspaceInvite = onWorkspaceInvite;
+      } catch (err) {
+        console.error("Pusher setup error:", err);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      try {
+        if (subChannel) {
+          // @ts-ignore
+          subChannel.unbind("workspace:invite", subChannel._onWorkspaceInvite);
+        }
+      } catch (e) {}
+      try {
+        if (pusher) {
+          pusher.disconnect();
+        }
+      } catch (e) {}
+    };
+  }, []);
+
+  // ============================
+  // JSX (exact same as your provided UI)
+  // ============================
   return (
     <div className="flex flex-col min-h-screen bg-[#0d1117] text-gray-200">
       {/* === GLOBAL STICKY NAV === */}
@@ -485,8 +584,6 @@ const handleAcceptInvite = async (token?: string, id?: string) => {
     <ChatSection selectedChannel={selectedChannel} />
   </main>
 </div>
-
-
 
       </div>
        {/* === CREATE WORKSPACE MODAL === */}

@@ -112,10 +112,11 @@ model WorkspaceMember {
 // 👥 CHANNEL MEMBER MODEL
 // ==============================
 model ChannelMember {
-  id        String   @id @default(cuid())
-  userId    String
-  channelId String
-  joinedAt  DateTime @default(now())
+  id              String   @id @default(cuid())
+  userId          String
+  channelId       String
+  joinedAt        DateTime @default(now())
+  isPendingInvite Boolean  @default(false)
 
   user    User    @relation("UserChannelMembers", fields: [userId], references: [id])
   channel Channel @relation("ChannelMembers", fields: [channelId], references: [id])
